@@ -1,4 +1,4 @@
-# octo-waffle
+# BG Remove
 <img src="https://github.com/ConsumptionParadox/octo-waffle/blob/main/img/LoadPhoto.png" width="300">
 <img src="https://github.com/ConsumptionParadox/octo-waffle/blob/main/img/RemoveBG.png" width="300">
 
