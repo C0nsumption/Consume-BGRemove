@@ -1,62 +1,108 @@
+# main.py
+
 import io
 import os
 import PySimpleGUI as sg
 from PIL import Image
-import BG_remover as bg
+import numpy as np
+import bg_remover as bg
+import logging
 
-file_types = [("JPEG (*.jpg)", "*.jpg"),
-              ("All files (*.*)", "*.*")]
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
+file_types = [("All files (*.*)", "*.*")]
 
-# GUI layout: each list is a row in the GUI
+def update_image(window, image, key):
+    img_width, img_height = image.size
+    scale = min(400/img_width, 400/img_height)
+    new_width, new_height = int(img_width * scale), int(img_height * scale)
+    
+    resized_image = image.resize((new_width, new_height), Image.LANCZOS)
+    bio = io.BytesIO()
+    resized_image.save(bio, format="PNG")
+    window[key].erase()
+    window[key].draw_image(data=bio.getvalue(), location=(0, new_height))
+    
+    return new_width, new_height
+
+def process_image(image, color, tolerance, blur_radius, mode, refine):
+    try:
+        logging.info(f"Processing image... Mode: {mode}, Refine: {refine}")
+        colorized = bg.remove_background(image, *color, tolerance, blur_radius, mode=mode, refine=refine)
+        logging.info("Image processing completed.")
+        return colorized
+    except Exception as e:
+        logging.error(f"Failed to process image: {str(e)}")
+        return None
+
 layout = [
-    [sg.Image(key="-IMAGE-")],
-    [sg.Text("Image File"), sg.Input(size=(25, 1), key="-FILE-"), sg.FileBrowse(file_types=file_types), sg.Button("Load Image", key='-LOADIMAGE-'),],
-    [sg.Text("Adjust sliders to remove anypixel within that minimum range of color.")],
-    [sg.Text("0 = Black    255 = White      Slightly adjust sliders to refine edge.")],
-    [sg.Text("Red", font=16), sg.Slider(range=(0, 255), orientation='h', key='-RED-', default_value=250)], 
-    [sg.Text("Blue", font=16),sg.Slider(range=(0, 255), orientation='h', key='-BLUE-', default_value=250)], 
-    [sg.Text("Green", font=16),sg.Slider(range=(0, 255), orientation='h', key='-GREEN-', default_value=250)], 
-    [sg.Button("Remove BG", key='-REMOVEBG-')],
-    [sg.Button("Save Result", key='-SAVERESULT-')]
+    [sg.Text("Input file:"), sg.Input(size=(25, 1), enable_events=True, key="-IN FILE-"), sg.FileBrowse(file_types=file_types)],
+    [sg.Button("Save File", key="-SAVE-"), sg.Button("Exit")],
+    [sg.Graph(canvas_size=(400, 400), graph_bottom_left=(0, 0), graph_top_right=(400, 400), key="-IN-", enable_events=True),
+     sg.Graph(canvas_size=(400, 400), graph_bottom_left=(0, 0), graph_top_right=(400, 400), key="-OUT-", enable_events=True)],
+    [sg.Text("Click on the input image to select background color")],
+    [sg.Text("Selected Color:"), sg.Text("", size=(15,1), key="-SELECTED-COLOR-")],
+    [sg.Text("Tolerance:"), sg.Slider(range=(0, 100), orientation='h', key='-TOLERANCE-', default_value=30, enable_events=True)],
+    [sg.Text("Blur Radius:"), sg.Slider(range=(0, 5), orientation='h', key='-BLUR-', default_value=2, resolution=0.1, enable_events=True)],
+    [sg.Text("Mode:"), sg.Radio("Simple", "MODE", key="-SIMPLE-", default=True, enable_events=True), 
+     sg.Radio("Advanced", "MODE", key="-ADVANCED-", enable_events=True)],
+    [sg.Checkbox("Refine Edges", key="-REFINE-", enable_events=True)]
 ]
 
-# Creating our actual window (pass in GUI layout)
-window = sg.Window("BG Remover", layout)
+window = sg.Window("Background Remover", layout, size=(850, 650))
 
-# Event loop for our window
+image = colorized = None
+image_size = (0, 0)
+selected_color = None
+
 while True:
     event, values = window.read()
-    if event == "Exit" or event == sg.WIN_CLOSED:
+    if event in (sg.WIN_CLOSED, "Exit"):
         break
 
-    # loads image into memory if it exist
-    if event == "-LOADIMAGE-":
-        filename = values["-FILE-"]
+    if event == "-IN FILE-":
+        filename = values["-IN FILE-"]
         if os.path.exists(filename):
-            image = Image.open(values["-FILE-"])
-            image.thumbnail((400, 400))
-            bio = io.BytesIO()
-            image.save(bio, format="PNG")
-            window["-IMAGE-"].update(data=bio.getvalue())
+            try:
+                image = Image.open(filename)
+                image_size = update_image(window, image, "-IN-")
+                window["-OUT-"].erase()
+                window["-SELECTED-COLOR-"].update("")
+                selected_color = None
+                logging.info(f"Image loaded. Size: {image.size}")
+            except Exception as e:
+                logging.error(f"Failed to load image: {str(e)}")
+                sg.popup_error("Error", f"Failed to load image: {str(e)}")
 
-    # removes bg from image and reloads result back into memory
-    if event == "-REMOVEBG-":
-        image = bg.convertImage(image, values['-RED-'], values['-BLUE-'], values['-GREEN-'])
-        bio = io.BytesIO()
-        image.save(bio, format="PNG")
-        window["-IMAGE-"].update(data=bio.getvalue())
+    if event == "-IN-" and image:
+        try:
+            x, y = values["-IN-"]
+            orig_x = int(x * (image.width / image_size[0]))
+            orig_y = int((image_size[1] - y) * (image.height / image_size[1]))
+            selected_color = image.getpixel((orig_x, orig_y))[:3]
+            window["-SELECTED-COLOR-"].update(f"RGB: {selected_color}")
+            logging.info(f"Pixel selected at coordinates ({orig_x}, {orig_y}). Color: {selected_color}")
+        except Exception as e:
+            logging.error(f"Failed to get pixel color: {str(e)}")
+            sg.popup_error("Error", f"Failed to get pixel color: {str(e)}")
 
-    # saves image.
-    if event == "-SAVERESULT-":
-        # checks for an instance of image variable in locals to prevent crashing
-        if 'image' in locals():
-            image.save('result.png', format="PNG")
-        else:
-            print('you must select an image')
-        
+    if event in ("-IN-", "-TOLERANCE-", "-BLUR-", "-SIMPLE-", "-ADVANCED-", "-REFINE-") and image and selected_color:
+        tolerance = int(values['-TOLERANCE-'])
+        blur_radius = float(values['-BLUR-'])
+        mode = 'advanced' if values['-ADVANCED-'] else 'simple'
+        refine = values['-REFINE-']
+        colorized = process_image(image, selected_color, tolerance, blur_radius, mode, refine)
+        if colorized:
+            update_image(window, colorized, "-OUT-")
 
+    if event == "-SAVE-" and colorized:
+        try:
+            filename = sg.popup_get_file('Save processed image.', save_as=True, file_types=file_types)
+            if filename:
+                colorized.save(filename)
+                sg.popup_quick_message('Image saved successfully', background_color='green', text_color='white', font='Any 16')
+        except Exception as e:
+            logging.error(f"Failed to save image: {str(e)}")
+            sg.popup_error("Error", f"Failed to save image: {str(e)}")
 
 window.close()
-if __name__ == "__main__":
-    pass
